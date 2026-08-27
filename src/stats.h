@@ -183,9 +183,12 @@ struct Settings {
   bool led;
   bool hud;
   uint8_t clockRot;  // 0=auto 1=portrait 2=landscape
+  uint8_t volume;    // 0..4 -> index into VOL_STEPS in main.cpp
 };
 
-static Settings _settings = { true, true, false, true, true, 0 };
+// Speaker was pinned at 180/255 with no way down; 2 (=120) is the new
+// default so the approval chirp doesn't startle a quiet desk.
+static Settings _settings = { true, true, false, true, true, 0, 2 };
 
 inline void settingsLoad() {
   _prefs.begin("buddy", true);
@@ -196,6 +199,8 @@ inline void settingsLoad() {
   _settings.hud      = _prefs.getBool("s_hud", true);
   _settings.clockRot = _prefs.getUChar("s_crot", 0);
   if (_settings.clockRot > 2) _settings.clockRot = 0;
+  _settings.volume = _prefs.getUChar("s_vol", 2);
+  if (_settings.volume > 4) _settings.volume = 2;
   _prefs.end();
 }
 
@@ -207,6 +212,7 @@ inline void settingsSave() {
   _prefs.putBool("s_led", _settings.led);
   _prefs.putBool("s_hud", _settings.hud);
   _prefs.putUChar("s_crot", _settings.clockRot);
+  _prefs.putUChar("s_vol", _settings.volume);
   _prefs.end();
 }
 

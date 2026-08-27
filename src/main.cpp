@@ -95,6 +95,12 @@ static bool isFaceDown() {
 
 static void applyBrightness() { M5.Display.setBrightness((brightLevel + 1) * 51); }
 
+// Speaker levels. The StickS3 drives a real 1W speaker, not the StickC
+// Plus's piezo buzzer, so the old hardcoded 180 is genuinely loud on a
+// quiet desk. Step 2 (=120) is the default.
+static const uint8_t VOL_STEPS[5] = { 30, 70, 120, 180, 255 };
+static void applyVolume() { M5.Speaker.setVolume(VOL_STEPS[settings().volume]); }
+
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
@@ -138,8 +144,8 @@ const uint8_t MENU_N = 6;
 
 bool    settingsOpen = false;
 uint8_t settingsSel  = 0;
-const char* settingsItems[] = { "brightness", "sound", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
-const uint8_t SETTINGS_N = 10;
+const char* settingsItems[] = { "brightness", "sound", "volume", "bluetooth", "wifi", "led", "transcript", "clock rot", "ascii pet", "reset", "back" };
+const uint8_t SETTINGS_N = 11;
 
 bool    resetOpen = false;
 uint8_t resetSel  = 0;
@@ -157,19 +163,26 @@ static void applySetting(uint8_t idx) {
       return;
     case 1: s.sound = !s.sound; break;
     case 2:
+      s.volume = (s.volume + 1) % 5;
+      applyVolume();
+      // Preview the level you just picked — bypasses beep()'s sound gate so
+      // the step is audible even while stepping past a muted setting.
+      M5.Speaker.tone(1200, 70);
+      break;
+    case 3:
       // BT toggle is a stored preference only — BLE stays live. Turning
       // BLE off cleanly would require tearing down the BLE stack which
       // the Arduino BLE library doesn't do reliably. If we need a
       // hard-off someday, stop advertising via BLEDevice::getAdvertising().
       s.bt = !s.bt;
       break;
-    case 3: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
-    case 4: s.led = !s.led; break;
-    case 5: s.hud = !s.hud; break;
-    case 6: s.clockRot = (s.clockRot + 1) % 3; break;
-    case 7: nextPet(); return;
-    case 8: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
-    case 9: settingsOpen = false; characterInvalidate(); return;
+    case 4: s.wifi = !s.wifi; break;   // stored only — no WiFi stack linked
+    case 5: s.led = !s.led; break;
+    case 6: s.hud = !s.hud; break;
+    case 7: s.clockRot = (s.clockRot + 1) % 3; break;
+    case 8: nextPet(); return;
+    case 9: resetOpen = true; resetSel = 0; resetConfirmIdx = 0xFF; return;
+    case 10: settingsOpen = false; characterInvalidate(); return;
   }
   settingsSave();
 }
@@ -255,7 +268,6 @@ static void drawSettings() {
   spr.drawRoundRect(mx, my, mw, mh, 4, p.textDim);
   spr.setTextSize(1);
   Settings& s = settings();
-  bool vals[] = { s.sound, s.bt, s.wifi, s.led, s.hud };
   for (int i = 0; i < SETTINGS_N; i++) {
     bool sel = (i == settingsSel);
     spr.setTextColor(sel ? p.text : p.textDim, PANEL);
@@ -264,15 +276,28 @@ static void drawSettings() {
     spr.print(settingsItems[i]);
     spr.setCursor(mx + mw - 36, my + 8 + i * 14);
     spr.setTextColor(p.textDim, PANEL);
-    if (i == 0) {
+    // The bool rows stopped being one contiguous run once "volume" landed
+    // between sound and bluetooth, so map each row explicitly rather than
+    // indexing a parallel array by offset.
+    const bool* b = nullptr;
+    switch (i) {
+      case 1: b = &s.sound; break;
+      case 3: b = &s.bt;    break;
+      case 4: b = &s.wifi;  break;
+      case 5: b = &s.led;   break;
+      case 6: b = &s.hud;   break;
+    }
+    if (b) {
+      spr.setTextColor(*b ? GREEN : p.textDim, PANEL);
+      spr.print(*b ? " on" : "off");
+    } else if (i == 0) {
       spr.printf("%u/4", brightLevel);
-    } else if (i >= 1 && i <= 5) {
-      spr.setTextColor(vals[i-1] ? GREEN : p.textDim, PANEL);
-      spr.print(vals[i-1] ? " on" : "off");
-    } else if (i == 6) {
+    } else if (i == 2) {
+      spr.printf("%u/4", s.volume);
+    } else if (i == 7) {
       static const char* const RN[] = { "auto", "port", "land" };
       spr.print(RN[s.clockRot]);
-    } else if (i == 7) {
+    } else if (i == 8) {
       uint8_t total = buddySpeciesCount() + (gifAvailable ? 1 : 0);
       uint8_t pos   = buddyMode ? buddySpeciesIdx() + 1 : total;
       spr.printf("%u/%u", pos, total);
@@ -976,13 +1001,16 @@ void setup() {
   Serial.setTxTimeoutMs(0);
   M5.begin();
   M5.Lcd.setRotation(0);
-  M5.Speaker.setVolume(180);     // IMU auto-inits in M5.begin()
+  // IMU auto-inits in M5.begin(). Volume comes from NVS, but settingsLoad()
+  // runs further down, so this is re-applied after it.
+  M5.Speaker.setVolume(VOL_STEPS[2]);
   startBt();
   compatLedInit();
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  applyVolume();
   petNameLoad();
   buddyInit();
 
