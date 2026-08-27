@@ -91,11 +91,12 @@ void bleInit(const char* deviceName) {
   // Request the biggest MTU we can get. macOS negotiates to 185 typically.
   BLEDevice::setMTU(517);
 
-  // "Just Works" pairing: encrypted + bonded, but no passkey/PIN. The random
-  // passkey-entry flow (DisplayOnly + MITM) was unusable when pairing directly
-  // from Windows — each failed retry minted a new code faster than you could
-  // type it. NoInputNoOutput negotiates Just Works, so the host pairs silently.
-  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+  // LE Secure Connections with passkey entry, as REFERENCE.md specifies: we
+  // advertise DisplayOnly, the stack mints a random 6-digit code, and the user
+  // types it on the desktop. This is what buys MITM protection -- transcript
+  // snippets and tool-call hints cross this link, and plain "Just Works"
+  // bonding leaves it open to an active pairing-time attacker.
+  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT_MITM);
   BLEDevice::setSecurityCallbacks(new SecCallbacks());
 
   server = BLEDevice::createServer();
@@ -122,8 +123,8 @@ void bleInit(const char* deviceName) {
   svc->start();
 
   BLESecurity* sec = new BLESecurity();
-  sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
-  sec->setCapability(ESP_IO_CAP_NONE);
+  sec->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
+  sec->setCapability(ESP_IO_CAP_OUT);   // DisplayOnly -> passkey shown on LCD
   sec->setKeySize(16);
   sec->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
   sec->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);

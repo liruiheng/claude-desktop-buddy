@@ -90,11 +90,15 @@ static inline bool compatOnUsb() {
 }
 
 // --- Onboard LED ------------------------------------------------------------
-// StickC Plus: red LED on GPIO10, active-low. StickS3 has no user LED (GPIO10
-// is Grove Port-A there), so the LED calls compile to no-ops.
+// StickC Plus: red LED on GPIO10, active-low.
+// StickS3: no GPIO-attached user LED (GPIO10 is Grove Port-A there), but the
+// internal indicator hangs off the M5PM1 PMIC's LED_EN rail (PWR_CFG bit 4),
+// reachable over the internal I2C bus. M5Unified's StickS3 power init leaves
+// LED_EN alone -- it only claims PM1 gpio0 for the power button -- so the
+// firmware owns that bit outright.
 #if defined(BOARD_STICKS3)
-static inline void compatLedInit() {}
-static inline void compatLedSet(bool) {}
+static inline void compatLedSet(bool on) { M5.Power.M5pm1.setLedEnLevel(on); }
+static inline void compatLedInit() { compatLedSet(false); }
 #else
 static const int COMPAT_LED_PIN = 10;
 static inline void compatLedInit() {
