@@ -96,11 +96,19 @@ pio run -e m5stickc-plus -t upload
 Add `--upload-port COM6` (Windows) or `--upload-port /dev/ttyACM0`
 (Linux/macOS) if auto-detection picks the wrong port.
 
-**M5StickS3 download mode:** if the S3 is still running other firmware (e.g.
-the factory UIFlow) and the upload can't connect, put it in download mode
-first — with USB connected, **hold the side (power) button until the inner
-green LED blinks**, then run the upload. Once this firmware is running its
-USB-serial port supports auto-reset, so later uploads don't need this.
+**M5StickS3:** no button presses needed — the S3 has no DTR/RTS reset line,
+so `scripts/sticks3_upload.py` drives download mode over a 1200-baud touch
+and boots the board again with a watchdog reset. Close any serial monitor
+first; a process holding the port makes esptool fail partway through the
+write with an error that points nowhere near the cause.
+
+If a board is running something that ignores the touch (factory UIFlow2, or
+an image whose USB never came up), enter download mode by hand: **hold the
+side button about two seconds and release** — the green LED blinks when it
+takes.
+
+See [docs/sticks3.md](docs/sticks3.md) for the board's other differences and
+for what the desktop bridge actually puts on the wire.
 
 To wipe a previously-flashed device first:
 
