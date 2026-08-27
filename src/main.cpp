@@ -115,6 +115,7 @@ static void wake() {
   if (dimmed) { applyBrightness(); dimmed = false; }
 }
 bool     responseSent = false;
+uint32_t responseSentMs = 0;
 
 static void beep(uint16_t freq, uint16_t dur) {
   if (settings().sound) M5.Speaker.tone(freq, dur);
@@ -735,37 +736,60 @@ void drawInfo() {
 }
 
 
-// Greedy word-wrap into fixed-width rows. Continuation rows get a leading
-// space. Returns number of rows written.
-static uint8_t wrapInto(const char* in, char out[][24], uint8_t maxRows, uint8_t width) {
+// Bytes per wrapped row. A row is budgeted in half-width columns, and the
+// widest thing that fits a column pair is a 4-byte UTF-8 sequence, so the
+// worst case is (HUD_COLS / 2) * 4 + terminator.
+#define HUD_WRAP_BYTES 48
+
+// UTF-8 aware greedy wrap. `cols` is a budget in half-width units: an ASCII
+// byte costs 1, any multi-byte sequence costs 2, matching efont's biwidth
+// metrics (6px latin, 12px CJK).
+//
+// The previous version walked raw bytes and hard-broke over-long words with
+// memcpy at an arbitrary offset. Latin text survived that; a Chinese line has
+// no spaces at all, so it took the hard-break path every time and sliced UTF-8
+// mid-sequence, which is what rendered as garbage. This one only ever cuts on
+// a sequence boundary, and prefers the last space on the row so latin words
+// still stay whole.
+static uint8_t wrapInto(const char* in, char out[][HUD_WRAP_BYTES],
+                        uint8_t maxRows, uint8_t cols) {
   uint8_t row = 0, col = 0;
+  uint16_t bi = 0;
+  const char* spP = nullptr;   // input position of the last space on this row
+  uint16_t    spBi = 0;        // ...and where it landed in the output
   const char* p = in;
+
   while (*p && row < maxRows) {
-    while (*p == ' ') p++;                     // skip leading spaces
-    // measure next word
-    const char* w = p;
-    while (*p && *p != ' ') p++;
-    uint8_t wlen = p - w;
-    if (wlen == 0) break;
-    uint8_t need = (col > 0 ? 1 : 0) + wlen;
-    if (col + need > width) {
-      out[row][col] = 0;
-      if (++row >= maxRows) return row;
-      out[row][0] = ' '; col = 1;              // continuation indent
+    unsigned char c = (unsigned char)*p;
+    uint8_t sl = 1;
+    if      (c >= 0xF0) sl = 4;
+    else if (c >= 0xE0) sl = 3;
+    else if (c >= 0xC0) sl = 2;
+    // A truncated sequence (the desktop clips entries to a byte budget) would
+    // otherwise make us read past the terminator — fall back to one byte.
+    for (uint8_t k = 1; k < sl; k++) {
+      if ((p[k] & 0xC0) != 0x80) { sl = 1; break; }
     }
-    if (col > 1 || (col == 1 && out[row][0] != ' ')) out[row][col++] = ' ';
-    else if (col == 1 && row > 0) {}           // already have the indent space
-    // hard-break words that still don't fit
-    while (wlen > width - col) {
-      uint8_t take = width - col;
-      memcpy(&out[row][col], w, take); col += take; w += take; wlen -= take;
-      out[row][col] = 0;
+    uint8_t w = (sl == 1) ? 1 : 2;
+
+    if (col == 0 && c == ' ') { p++; continue; }        // trim row-leading space
+
+    if (col + w > cols || bi + sl >= HUD_WRAP_BYTES - 1) {
+      if (spP) {
+        out[row][spBi] = 0;      // cut at the space...
+        p = spP + 1;             // ...and re-read everything after it
+      } else {
+        out[row][bi] = 0;        // no space to break on (CJK run, long token)
+      }
       if (++row >= maxRows) return row;
-      out[row][0] = ' '; col = 1;
+      bi = 0; col = 0; spP = nullptr;
+      continue;
     }
-    memcpy(&out[row][col], w, wlen); col += wlen;
+    if (c == ' ') { spP = p; spBi = bi; }
+    memcpy(&out[row][bi], p, sl);
+    bi += sl; col += w; p += sl;
   }
-  if (col > 0 && row < maxRows) { out[row][col] = 0; row++; }
+  if (bi > 0 && row < maxRows) { out[row][bi] = 0; row++; }
   return row;
 }
 
@@ -964,11 +988,26 @@ void drawPet() {
 }
 
 void drawHUD() {
-  if (tama.promptId[0]) { drawApproval(); return; }
+  // promptId only clears when the desktop's next heartbeat arrives without a
+  // `prompt` field, so keying the panel purely off it left it on screen after
+  // you had already answered. Once we've replied, hold just long enough to
+  // show "sent..." and then drop back to the normal screen.
+  if (tama.promptId[0]
+   && (!responseSent || (int32_t)(millis() - responseSentMs) < 1200)) {
+    drawApproval(); return;
+  }
   const Palette& p = characterPalette();
-  const int SHOW = 3, LH = 8, WIDTH = 21;
+  // efontCN_12 for this strip only. The transcript carries whatever the
+  // desktop puts in it — including the assistant's own prose — so with the
+  // built-in 6x8 latin font every non-ASCII line rendered as garbage. efont
+  // is biwidth: latin stays 6px, so the 21-column budget and the density of
+  // command text are unchanged; CJK gets its own 12px glyphs. Only the row
+  // height grows (8 -> 12), taking the strip from 28px to 40px, which still
+  // clears the pet at ~y185.
+  const int SHOW = 3, LH = 12, WIDTH = 21;   // WIDTH counts half-width columns
   const int AREA = SHOW * LH + 4;
   spr.fillRect(0, H - AREA, W, AREA, p.bg);
+  spr.setFont(&fonts::efontCN_12);
   spr.setTextSize(1);
 
   if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
@@ -977,17 +1016,29 @@ void drawHUD() {
     spr.setTextColor(p.text, p.bg);
     spr.setCursor(4, H - LH - 2);
     spr.print(tama.msg);
+    spr.setFont(&fonts::Font0);   // every other panel assumes the 6x8 default
     return;
   }
 
   // Wrap all transcript lines into a flat display buffer. Track which
   // transcript index each display row came from, so we can dim older ones.
-  static char disp[32][24];
+  //
+  // Rows are claimed newest-entry-first and pushed to the front of the
+  // buffer. A forward fill spends the budget on the oldest lines, and once
+  // entries are long enough to wrap several rows each -- which CJK does, at
+  // ~10 glyphs a row -- the newest entry is exactly the one that falls off
+  // the end. The visible window sits at the tail, so that is backwards.
+  static char disp[32][HUD_WRAP_BYTES];
+  static char tmp[32][HUD_WRAP_BYTES];
   static uint8_t srcOf[32];
   uint8_t nDisp = 0;
-  for (uint8_t i = 0; i < tama.nLines && nDisp < 32; i++) {
-    uint8_t got = wrapInto(tama.lines[i], &disp[nDisp], 32 - nDisp, WIDTH);
-    for (uint8_t j = 0; j < got; j++) srcOf[nDisp + j] = i;
+  for (int i = (int)tama.nLines - 1; i >= 0 && nDisp < 32; i--) {
+    uint8_t got = wrapInto(tama.lines[i], tmp, 32 - nDisp, WIDTH);
+    if (!got) continue;
+    memmove(&disp[got], &disp[0], (size_t)nDisp * HUD_WRAP_BYTES);
+    memmove(&srcOf[got], &srcOf[0], nDisp);
+    memcpy(&disp[0], &tmp[0], (size_t)got * HUD_WRAP_BYTES);
+    for (uint8_t j = 0; j < got; j++) srcOf[j] = (uint8_t)i;
     nDisp += got;
   }
 
@@ -1009,6 +1060,9 @@ void drawHUD() {
     spr.setCursor(W - 18, H - LH - 2);
     spr.printf("-%u", msgScroll);
   }
+  // drawMenu/drawSettings paint over this frame after we return, and they are
+  // all laid out for the 6x8 default — leaving efont set would reflow them.
+  spr.setFont(&fonts::Font0);
 }
 
 void setup() {
@@ -1090,10 +1144,6 @@ void loop() {
   // stopped to ask a question": a session blocked on AskUserQuestion is not
   // generating either, so both land here. The desktop gives us no way to
   // tell them apart — `prompt` only ever carries tool-permission requests.
-  //
-  // Debounced: `running` dips to zero between turns inside one agent session,
-  // so firing on the raw edge would chime every few tool calls. Only a quiet
-  // spell that outlasts QUIET_SETTLE_MS counts as the work actually stopping.
   static bool sawWork = false;
   static uint32_t quietSinceMs = 0;
   static uint8_t hbT = 255, hbR = 255, hbW = 255;
@@ -1104,6 +1154,10 @@ void loop() {
                   tama.sessionsWaiting, tama.msg);
     hbT = tama.sessionsTotal; hbR = tama.sessionsRunning; hbW = tama.sessionsWaiting;
   }
+  //
+  // Debounced: `running` dips to zero between turns inside one agent session,
+  // so firing on the raw edge would chime every few tool calls. Only a quiet
+  // spell that outlasts QUIET_SETTLE_MS counts as the work actually stopping.
   static const uint32_t QUIET_SETTLE_MS = 3000;
   if (!tama.connected) {
     sawWork = false; quietSinceMs = 0;
@@ -1153,6 +1207,8 @@ void loop() {
   // BtnA: step through fake scenarios
   // Prompt arrival: beep, reset response flag
   if (strcmp(tama.promptId, lastPromptId) != 0) {
+    Serial.printf("[prompt] %s tool='%s'\n",
+                  tama.promptId[0] ? tama.promptId : "(cleared)", tama.promptTool);
     strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId)-1);
     lastPromptId[sizeof(lastPromptId)-1] = 0;
     responseSent = false;
@@ -1213,6 +1269,7 @@ void loop() {
         snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
         sendCmd(cmd);
         responseSent = true;
+      responseSentMs = millis();
         uint32_t tookS = (millis() - promptArrivedMs) / 1000;
         statsOnApproval(tookS);
         beep(2400, 60);
@@ -1246,6 +1303,7 @@ void loop() {
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
       sendCmd(cmd);
       responseSent = true;
+      responseSentMs = millis();
       statsOnDenial();
       beep(600, 60);
     } else if (resetOpen) {
