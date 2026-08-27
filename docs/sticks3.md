@@ -150,7 +150,9 @@ from completed work.
 **`entries` carries prose, not just commands.** The transcript is the tail of
 the session's own messages — assistant text included, in whatever language
 the session is conducted in. It is not a log of tool invocations, and it is
-routinely non-ASCII.
+routinely non-ASCII. The desktop keeps the last 8 messages of the most
+recently active session and slices each to 88 characters, so a receive buffer
+needs 265 bytes per entry to hold 88 CJK characters without clipping.
 
 **Chat conversations are not included.** Only Claude Code and Cowork sessions
 have the `pendingToolPermissions` the bridge reads.

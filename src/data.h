@@ -11,9 +11,12 @@ struct TamaState {
   bool     recentlyCompleted;
   uint32_t tokensToday;
   uint32_t lastUpdated;
-  char     msg[24];
+  char     msg[265];   // same 88-char ceiling as an entry
   bool     connected;
-  char     lines[8][160];   // ~53 CJK chars; latin lines are rarely this long
+  // The desktop slices entries to 88 JS characters (`P` in its bridge), so
+  // the worst case on the wire is 88 CJK characters at 3 UTF-8 bytes each.
+  // Anything smaller silently clips prose; 160 cut mid-sentence at ~53.
+  char     lines[8][265];
   uint8_t  nLines;
   uint16_t lineGen;          // bumps when lines change — lets UI reset scroll
   char     promptId[40];     // pending permission request ID; empty = no prompt
@@ -65,6 +68,18 @@ inline const char* dataScenarioName() {
 // Set true once the bridge sends a time sync — until then the RTC may
 // hold whatever was on the coin cell (or 2000-01-01 if it lost power).
 static bool _rtcValid = false;
+// Copy into a fixed buffer, clamping on a UTF-8 sequence boundary. A
+// byte-exact cut lands mid-character on anything non-latin: it loses the
+// character it split and leaves orphaned continuation bytes behind for the
+// renderer to draw as garbage.
+template<size_t N>
+inline void _copyUtf8(char (&dst)[N], const char* src) {
+  size_t len = src ? strnlen(src, N - 1) : 0;
+  while (len > 0 && ((unsigned char)src[len] & 0xC0) == 0x80) len--;
+  if (len) memcpy(dst, src, len);
+  dst[len] = 0;
+}
+
 inline bool dataRtcValid() { return _rtcValid; }
 
 static void _applyJson(const char* line, TamaState* out) {
@@ -97,22 +112,13 @@ static void _applyJson(const char* line, TamaState* out) {
   if (doc["tokens"].is<uint32_t>()) statsOnBridgeTokens(bridgeTokens);
   out->tokensToday = doc["tokens_today"] | out->tokensToday;
   const char* m = doc["msg"];
-  if (m) { strncpy(out->msg, m, sizeof(out->msg)-1); out->msg[sizeof(out->msg)-1]=0; }
+  if (m) _copyUtf8(out->msg, m);
   JsonArray la = doc["entries"];
   if (!la.isNull()) {
     uint8_t n = 0;
     for (JsonVariant v : la) {
       if (n >= 8) break;
-      const char* s = v.as<const char*>();
-      // Clamp to the buffer, then back off to the last complete UTF-8
-      // sequence. A byte-exact cut lands mid-character on CJK text, which
-      // both loses the character it split and leaves orphaned continuation
-      // bytes for the renderer to draw as garbage.
-      const size_t cap = sizeof(out->lines[0]) - 1;
-      size_t len = s ? strnlen(s, cap) : 0;
-      while (len > 0 && ((unsigned char)s[len] & 0xC0) == 0x80) len--;
-      if (len) memcpy(out->lines[n], s, len);
-      out->lines[n][len] = 0;
+      _copyUtf8(out->lines[n], v.as<const char*>());
       n++;
     }
     if (n != out->nLines || (n > 0 && strcmp(out->lines[n-1], out->msg) != 0)) {
