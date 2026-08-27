@@ -35,6 +35,9 @@ TamaState    tama;
 PersonaState baseState   = P_SLEEP;
 PersonaState activeState = P_SLEEP;
 uint32_t     oneShotUntil = 0;
+uint32_t     quietAlertUntil = 0;   // LED flutter window for the all-quiet alert
+static uint32_t chimeNextMs = 0;    // non-blocking second note of the chime
+static uint8_t  chimeStep   = 0;
 uint32_t     lastShakeCheck = 0;
 float        accelBaseline = 1.0f;
 unsigned long t = 0;
@@ -115,6 +118,15 @@ bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
   if (settings().sound) M5.Speaker.tone(freq, dur);
+}
+
+// Two-note rising chime for the all-quiet alert, deliberately unlike the
+// single flat chirp an approval makes. The second note is fired from loop()
+// so nothing blocks here.
+static void startChime(uint32_t now) {
+  beep(1175, 100);
+  chimeStep = 1;
+  chimeNextMs = now + 120;
 }
 
 static void sendCmd(const char* json) {
@@ -503,9 +515,15 @@ static void drawClock() {
 PersonaState derive(const TamaState& s) {
   if (!s.connected)            return P_IDLE;
   if (s.sessionsWaiting > 0)   return P_ATTENTION;
+  // Dead in practice: the desktop heartbeat has no `completed` key, so this
+  // never fires. Kept because it costs nothing and would light up on its own
+  // if the desktop ever starts sending it. The all-quiet alert in loop()
+  // is what actually reacts to work finishing today.
   if (s.recentlyCompleted)     return P_CELEBRATE;
-  if (s.sessionsRunning >= 3)  return P_BUSY;
-  return P_IDLE;   // connected, 0+ sessions, nothing urgent — hang out
+  // Was >= 3, which left the pet looking idle through one or two parallel
+  // tasks — the common case. One running session is already "working".
+  if (s.sessionsRunning >= 1)  return P_BUSY;
+  return P_IDLE;   // connected, nothing running, nothing urgent — hang out
 }
 
 void triggerOneShot(PersonaState s, uint32_t durMs) {
@@ -1056,6 +1074,53 @@ void loop() {
 
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
+
+  if (chimeStep && (int32_t)(now - chimeNextMs) >= 0) {
+    beep(1568, 140);
+    chimeStep = 0;
+  }
+
+  // --- All-quiet alert ---------------------------------------------------
+  // The heartbeat never says a task *finished*: it reports `running` (how
+  // many sessions are actively generating) and nothing else. So infer it —
+  // when the running count falls back to zero with no approval pending, the
+  // machine has stopped needing the CPU and started needing you.
+  //
+  // This deliberately does not distinguish "the task completed" from "it
+  // stopped to ask a question": a session blocked on AskUserQuestion is not
+  // generating either, so both land here. The desktop gives us no way to
+  // tell them apart — `prompt` only ever carries tool-permission requests.
+  //
+  // Debounced: `running` dips to zero between turns inside one agent session,
+  // so firing on the raw edge would chime every few tool calls. Only a quiet
+  // spell that outlasts QUIET_SETTLE_MS counts as the work actually stopping.
+  static bool sawWork = false;
+  static uint32_t quietSinceMs = 0;
+  static uint8_t hbT = 255, hbR = 255, hbW = 255;
+  if (tama.sessionsTotal   != hbT || tama.sessionsRunning != hbR
+   || tama.sessionsWaiting != hbW) {
+    Serial.printf("[hb] total=%u running=%u waiting=%u msg='%s'\n",
+                  tama.sessionsTotal, tama.sessionsRunning,
+                  tama.sessionsWaiting, tama.msg);
+    hbT = tama.sessionsTotal; hbR = tama.sessionsRunning; hbW = tama.sessionsWaiting;
+  }
+  static const uint32_t QUIET_SETTLE_MS = 3000;
+  if (!tama.connected) {
+    sawWork = false; quietSinceMs = 0;
+  } else if (tama.sessionsRunning > 0) {
+    sawWork = true;  quietSinceMs = 0;
+  } else if (sawWork && tama.sessionsWaiting == 0) {
+    if (quietSinceMs == 0) {
+      quietSinceMs = now ? now : 1;   // 0 is the "not counting" sentinel
+    } else if ((int32_t)(now - quietSinceMs) >= (int32_t)QUIET_SETTLE_MS) {
+      sawWork = false; quietSinceMs = 0;
+      quietAlertUntil = now + 4000;
+      wake();
+      triggerOneShot(P_CELEBRATE, 3000);
+      startChime(now);
+      Serial.println("[alert] all sessions quiet");
+    }
+  }
   baseState = derive(tama);
 
   // After waking the screen, hold sleep for 12s so users see the wake-up
@@ -1065,8 +1130,12 @@ void loop() {
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
   // LED: pulse on attention, otherwise off
-  if (activeState == P_ATTENTION && settings().led) {
-    compatLedSet((now / 400) % 2);
+  if (!settings().led) {
+    compatLedSet(false);
+  } else if (activeState == P_ATTENTION) {
+    compatLedSet((now / 400) % 2);          // slow pulse: waiting on you
+  } else if ((int32_t)(now - quietAlertUntil) < 0) {
+    compatLedSet((now / 150) % 2);          // quick flutter: work went quiet
   } else {
     compatLedSet(false);
   }
@@ -1210,9 +1279,14 @@ void loop() {
   clockRefreshRtc();   // 1Hz internal throttle; also caches _onUsb
   // Show the clock when nothing is happening — bridge heartbeat alone
   // doesn't count as activity (it's the only way to get the RTC synced).
+  // The all-quiet alert fires on exactly the transition that also satisfies
+  // the clock's entry condition (running hits zero). Clock mode overwrites
+  // activeState and draws over the pet, so it would swallow the celebration
+  // it was meant to announce. Hold it off until the alert window closes.
   bool clocking = displayMode == DISP_NORMAL
                && !menuOpen && !settingsOpen && !resetOpen && !inPrompt
                && tama.sessionsRunning == 0 && tama.sessionsWaiting == 0
+               && (int32_t)(now - quietAlertUntil) >= 0
                && dataRtcValid() && _onUsb;
   if (clocking) clockUpdateOrient();
   else { clockOrient = 0; orientFrames = 0; paintedOrient = 0; }
