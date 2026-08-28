@@ -220,6 +220,12 @@ static void applyReset(uint8_t idx) {
     return;
   }
 
+  // Both branches below run far longer than the 5s watchdog allows —
+  // LittleFS.format() alone takes several seconds on a 3.94MB partition —
+  // and both end in ESP.restart(), so drop off the watchdog rather than
+  // trying to feed it through a blocking call.
+  disableLoopWDT();
+
   beep(800, 200);
   if (idx == 0) {
     // delete char: wipe /characters/, reboot into ASCII mode
@@ -1153,6 +1159,19 @@ void setup() {
   }
 
   Serial.printf("buddy: %s\n", buddyMode ? "ASCII mode" : "GIF character loaded");
+
+  // Subscribe loop() to the task watchdog. The Arduino core leaves the loop
+  // task unwatched by default, so a main loop that wedges takes the UI, the
+  // BLE bridge and the serial console with it while the USB peripheral keeps
+  // enumerating from its own task — the device looks alive to the host and
+  // needs someone to physically press the power button. Observed once on
+  // hardware, with no coredump to explain it.
+  //
+  // The core resets the watchdog itself before each loop() call, so nothing
+  // else here has to feed it. The timeout is 5s and CONFIG_ESP_TASK_WDT_PANIC
+  // is set, so a wedge now writes a coredump to the partition reserved for
+  // one and reboots, which also makes the next occurrence diagnosable.
+  enableLoopWDT();
 }
 
 void loop() {

@@ -195,6 +195,36 @@ through M5Unified — so charge state has to be read from `isCharging()` (PM1
 GPIO0, low means charging) and confirmed by watching the voltage trend.
 `getChargeCurrent()` returns 0 as well.
 
+## When it wedges
+
+`setup()` subscribes `loop()` to the task watchdog. The Arduino core leaves
+the loop task unwatched by default, which means a wedged main loop takes the
+UI, the BLE bridge and the serial console with it while the USB peripheral
+keeps enumerating from its own task — the stick looks alive to the host and
+needs someone to physically press the power button. That happened once here,
+with nothing to explain it.
+
+The timeout is 5s and `CONFIG_ESP_TASK_WDT_PANIC` is set, so a wedge now
+panics, writes a core dump to the partition reserved for one, and reboots.
+Measured end to end: 5.5s from wedge to reset, back on the bus 2s later.
+
+The factory-reset path unsubscribes first — `LittleFS.format()` alone runs
+well past 5s on a 3.94MB partition — and ends in `ESP.restart()` anyway.
+
+To read a dump back, with the board in download mode:
+
+```bash
+esptool.py --chip esp32s3 --port <port> read_flash 0x7F0000 0x10000 core.bin
+pip install esp-coredump
+esp-coredump --chip esp32s3 info_corefile \
+  --gdb <toolchain>/bin/xtensa-esp32s3-elf-gdb \
+  --core core.bin --core-format raw \
+  .pio/build/m5stack-sticks3/firmware.elf
+```
+
+The `loopTask` thread's frame #0 is where it stopped. Verified against a
+deliberate `for(;;)` — the backtrace named the exact source line.
+
 ## Serial output
 
 With USB mode 0 the console works, and the firmware logs state changes rather
