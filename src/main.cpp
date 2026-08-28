@@ -1567,6 +1567,22 @@ void loop() {
     if (resetOpen) drawReset();
     else if (settingsOpen) drawSettings();
     else if (menuOpen) drawMenu();
+
+    // An overlay panel just closed. Nothing repaints the area it covered: the
+    // settings panel spans y=28..212, drawInfo only repaints from y=70 and
+    // drawHUD only the bottom strip, so the rest of the panel would survive as
+    // a ghost. Opening a GIF used to wipe the sprite unconditionally and
+    // cleaned this up by accident; now that it only wipes when the pet
+    // actually moves, the cleanup has to be asked for.
+    static bool hadOverlay = false;
+    bool overlay = resetOpen || settingsOpen || menuOpen;
+    if (hadOverlay && !overlay) {
+      spr.fillSprite(0x0000);
+      characterInvalidate();
+      if (buddyMode) buddyInvalidate();
+    }
+    hadOverlay = overlay;
+
     spr.pushSprite(0, 0);
   }
 
