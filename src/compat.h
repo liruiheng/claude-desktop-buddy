@@ -89,6 +89,22 @@ static inline bool compatOnUsb() {
   return (int)M5.Power.isCharging() != 0;   // charging/unknown => assume USB
 }
 
+// --- Battery ----------------------------------------------------------------
+// Percentage from voltage alone: 3.2V empty, 4.2V full. Neither board carries
+// a coulomb counter -- the StickS3's PM1 reports no battery current through
+// M5Unified at all -- so this is the best estimate available, and it moves
+// with load rather than charge: plugging in USB lifts it by around five points
+// as the charge current pushes the terminal voltage above the cell's resting
+// value, and unplugging drops it by the same amount. The cell has not changed.
+//
+// M5Unified's own getBatteryLevel() maps a different range (3.3V to 4.15V) and
+// reads several points higher for the same millivolts. Everything here goes
+// through this one so the screen and the status ack cannot disagree.
+static inline int compatBatteryPct(int mV) {
+  int pct = (mV - 3200) / 10;
+  return (pct < 0) ? 0 : (pct > 100) ? 100 : pct;
+}
+
 // --- Onboard LED ------------------------------------------------------------
 // StickC Plus: red LED on GPIO10, active-low.
 // StickS3: no GPIO-attached user LED (GPIO10 is Grove Port-A there), but the

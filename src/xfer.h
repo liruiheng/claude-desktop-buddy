@@ -115,8 +115,7 @@ inline bool xferCommand(JsonDocument& doc) {
     int vBat = M5.Power.getBatteryVoltage();
     int iBat = (int)M5.Power.getBatteryCurrent();
     int vBus = M5.Power.getVBUSVoltage();
-    int pct = (vBat - 3200) / 10;
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    int pct = compatBatteryPct(vBat);
     char b[320];
     int len = snprintf(b, sizeof(b),
       "{\"ack\":\"status\",\"ok\":true,\"n\":0,\"data\":{"
