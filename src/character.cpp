@@ -46,18 +46,31 @@ static int         gifX = 0, gifY = 0, gifW = 0, gifH = 0;
 // Peek mode pins the GIF bottom to the info-panel top (y=70) so the pet
 // sits on the panel edge regardless of canvas height. Home mode centers
 // in the upper 140px. No padding assumed in the source art.
-static const int   PEEK_TOP = 70;
-static bool        peekMode = false;
+// Per-level peek window heights: how far down the pet may draw before the
+// panel underneath repaints over it. Info and pet pages clear from y=70, the
+// clock face from y=98.
+static const int   PEEK_TOP_HALF = 70;
+static const int   PEEK_TOP_3Q   = 96;
+static inline int  peekTop(uint8_t lvl) {
+  return lvl == PEEK_3Q ? PEEK_TOP_3Q : PEEK_TOP_HALF;
+}
+static uint8_t     peekMode = PEEK_OFF;
 // Draw target — defaults to the sprite; characterRenderTo() retargets to
 // M5.Lcd for the landscape clock (both inherit TFT_eSPI).
 static TFT_eSPI*   _tgt = &spr;
-// Peek mode renders at half scale (2:1 nearest-neighbor in gifDrawCb) so
-// the whole pet fits the 70px window instead of cropping the top.
+// 1:2 is a bare bit-shift and so the cheapest downscale there is, which is
+// why it was the only one. It costs the clock face three quarters of the pet's
+// area though, so that one now gets 3:4 at the price of a multiply per pixel.
+static void gifScaled(int& w, int& h) {
+  if (peekMode == PEEK_3Q)        { w = gifW * 3 / 4; h = gifH * 3 / 4; }
+  else if (peekMode == PEEK_HALF) { w = gifW / 2;     h = gifH / 2; }
+  else                            { w = gifW;         h = gifH; }
+}
 static void gifPlace() {
-  int outW = peekMode ? gifW / 2 : gifW;
-  int outH = peekMode ? gifH / 2 : gifH;
+  int outW, outH;
+  gifScaled(outW, outH);
   gifX = (spr.width() - outW) / 2;
-  gifY = peekMode ? (PEEK_TOP - outH) / 2 : (140 - outH) / 2;
+  gifY = peekMode ? (peekTop(peekMode) - outH) / 2 : (140 - outH) / 2;
 }
 static uint32_t    nextFrameAt = 0;
 static uint32_t    animPauseUntil = 0;
@@ -121,13 +134,29 @@ static void gifDrawCb(GIFDRAW* d) {
     _tgt->drawPixel(x, y, (hasT && idx == t) ? pal.bg : pal16[idx]);
   };
 
-  if (peekMode) {
+  if (peekMode == PEEK_HALF) {
     if (srcY & 1) return;
     int y = gifY + (srcY >> 1);
-    if (y < 0 || y >= PEEK_TOP) return;
+    if (y < 0 || y >= PEEK_TOP_HALF) return;
     int x0 = gifX + (d->iX >> 1);
     int w  = d->iWidth >> 1;
     for (int i = 0; i < w; i++) put(x0 + i, y, src[i << 1]);
+    return;
+  }
+  if (peekMode == PEEK_3Q) {
+    // 3:4 nearest-neighbour: keep three source rows and columns out of every
+    // four. srcY % 4 == 1 is the row whose destination duplicates its
+    // predecessor's, so that is the one to drop.
+    if ((srcY & 3) == 1) return;
+    int y = gifY + srcY * 3 / 4;
+    if (y < 0 || y >= PEEK_TOP_3Q) return;
+    int x0 = gifX + d->iX * 3 / 4;
+    int w  = d->iWidth * 3 / 4;
+    for (int i = 0; i < w; i++) {
+      int si = i * 4 / 3;
+      if (si >= d->iWidth) break;
+      put(x0 + i, y, src[si]);
+    }
     return;
   }
 
@@ -261,8 +290,10 @@ const Palette& characterPalette() { return pal; }
 // animation runs even when characterTick() is bypassed.
 void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
   if (!gifOpen) return;   // caller opens via characterSetState(activeState)
-  TFT_eSPI* prevT = _tgt; bool prevP = peekMode; int px = gifX, py = gifY;
-  _tgt = tgt; peekMode = true;
+  TFT_eSPI* prevT = _tgt; uint8_t prevP = peekMode; int px = gifX, py = gifY;
+  // Landscape clock draws into a small corner: half scale, and the gifW/4
+  // offsets below assume it.
+  _tgt = tgt; peekMode = PEEK_HALF;
   gifX = cx - gifW / 4;
   gifY = cy - gifH / 4;
   uint32_t now = millis();
@@ -274,9 +305,9 @@ void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
   _tgt = prevT; peekMode = prevP; gifX = px; gifY = py;
 }
 
-bool characterSetPeek(bool peek) {
-  if (peekMode == peek) return false;
-  peekMode = peek;
+bool characterSetPeek(uint8_t level) {
+  if (peekMode == level) return false;
+  peekMode = level;
   characterInvalidate();
   return true;
 }
@@ -422,8 +453,7 @@ void characterTick() {
       // -- but gif.reset() only rewinds the decoder, which is exactly what the
       // multi-variant path below already does inside its dwell window. Looping
       // here means a state needs only one file to animate continuously, with
-      // no reopen, no full-sprite clear and no pause between passes, so a pack
-      // no longer has to duplicate files to get a state to keep moving.
+      // no reopen, no full-sprite clear and no pause between passes.
       if (framesThisPlay <= 1) {   // nothing to animate: a still image
         gif.close();
         gifOpen = false;

@@ -153,7 +153,9 @@ const uint8_t INFO_PG_CREDITS = 5;
 
 void applyDisplayMode() {
   bool peek = displayMode != DISP_NORMAL;
-  bool peekChanged = characterSetPeek(peek);
+  // Info and pet pages repaint from y=70, so the pet only gets half scale
+  // there; the clock face sets its own, larger level.
+  bool peekChanged = characterSetPeek(peek ? PEEK_HALF : PEEK_OFF);
   buddySetPeek(peek);
   // Clear the whole sprite on mode switch. drawInfo/drawPet clear their
   // own regions when they run, but when you switch FROM info/pet TO normal,
@@ -475,9 +477,10 @@ static void drawClock() {
 
   if (clockOrient == 0) {
     paintedOrient = 0;
-    // Bottom half — buddy naturally lives at y=0..82, GIF peeks at top
-    // via peek mode. Clearing from 90 leaves both untouched.
-    spr.fillRect(0, 90, W, H - 90, p.bg);
+    // Bottom half — buddy naturally lives at y=0..82, GIF peeks at top via
+    // peek mode, now 3:4 rather than 1:2 and so reaching y=95. Clearing from
+    // 98 still leaves both untouched.
+    spr.fillRect(0, 98, W, H - 98, p.bg);
     spr.setTextDatum(MC_DATUM);
     spr.setTextSize(4); spr.setTextColor(p.text, p.bg);    spr.drawString(hm, CX, 140);
     spr.setTextSize(2); spr.setTextColor(p.textDim, p.bg); spr.drawString(ss, CX, 175);
@@ -1487,10 +1490,11 @@ void loop() {
     // Both branches already invalidate: characterSetPeek() does it whenever
     // the level actually changes, and applyDisplayMode() calls it outright.
     // Invalidating again here reopened the GIF a second time, and every open
-    // used to clear the whole sprite -- so each transition in and out of clock
-    // mode cost two blinks rather than none.
+    // clears the whole sprite -- so each transition in and out of clock mode
+    // cost two flashes rather than one. The level always changes across this
+    // transition, so neither branch can silently skip it.
     if (clocking && !landscapeClock) {
-      if (!characterSetPeek(true)) characterInvalidate();
+      if (!characterSetPeek(PEEK_3Q)) characterInvalidate();
     } else {
       applyDisplayMode();
     }
