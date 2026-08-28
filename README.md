@@ -72,11 +72,19 @@ original M5StickC Plus working.
 
 **Behavior**
 
-- BLE pairing switched to **Just Works** (encrypted + bonded, no PIN): the
-  original random passkey-entry flow was unusable when pairing directly from
-  Windows (a new code on every retry).
+- BLE pairing uses **LE Secure Connections with passkey entry**, as
+  REFERENCE.md specifies: the stick displays a six-digit code and the host
+  prompts for it. An earlier revision of this fork had downgraded it to Just
+  Works over a Windows pairing problem; that also gave up MITM protection on
+  a link carrying transcript snippets and tool-call hints, and on macOS the
+  passkey flow negotiates fine.
 - Approval screen redesigned: the panel sizes to its content and shows the
   tool name + command in larger, readable text.
+- **The Grove port is left unpowered on both boards.** Nothing here drives
+  it, and `M5.begin()` otherwise runs the 5V boost converter unloaded off the
+  battery — enough on the StickS3 to cancel out the charge current entirely.
+  If you attach a Grove peripheral, drop the `cfg.output_power = false` line
+  in `setup()`.
 
 ## Flashing
 

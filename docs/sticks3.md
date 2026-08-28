@@ -159,10 +159,10 @@ have the `pendingToolPermissions` the bridge reads.
 
 ## Power
 
-The 250mAh cell is small for what this board runs — a 240MHz dual-core S3
-with PSRAM, BLE advertising continuously, and a backlit LCD — so the margin
+The 250mAh cell is small for what this board runs — a dual-core S3 with
+PSRAM, BLE advertising continuously, and a backlit LCD — so the margin
 between draw and charge is thin enough that configuration mistakes flip the
-sign.
+sign. All three below were measured on hardware.
 
 **Turn the Grove rail off.** `M5.begin()` defaults `cfg.output_power` to
 true, which enables the PM1's 5V boost converter for the Grove port. On a
@@ -183,10 +183,12 @@ board, for a workload that is idle most of the time.
 
 **Do not drive the LED from the render loop.** `LED_EN` is bit 4 of the same
 `PWR_CFG` register as `CHG_EN`, `DCDC_EN`, `LDO_EN` and `BOOST_EN`, so every
-LED write is an I2C read-modify-write of the PMIC's power configuration.
-Latch the state and only write on a change; on the StickC Plus the same call
-is a `digitalWrite` and costs nothing, which makes this easy to miss when
-porting.
+LED write is an I2C read-modify-write of the PMIC's power configuration. On
+the StickC Plus the same call is a `digitalWrite` and costs nothing, which
+makes this easy to miss when porting. Deduplicate at the call site rather
+than inside the hardware shim — `compat.h` is included by two dozen
+translation units, so a `static` latch there would give each of them a
+private copy of state that mirrors one hardware register.
 
 `bat.mA` is always 0 on this board — the PM1 does not report battery current
 through M5Unified — so charge state has to be read from `isCharging()` (PM1

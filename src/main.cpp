@@ -36,6 +36,11 @@ PersonaState baseState   = P_SLEEP;
 PersonaState activeState = P_SLEEP;
 uint32_t     oneShotUntil = 0;
 uint32_t     quietAlertUntil = 0;   // LED flutter window for the all-quiet alert
+// Held until the USB host actually opens the port. Serial.setTxTimeoutMs(0)
+// makes writes non-blocking, which means anything printed during setup() is
+// dropped rather than queued — silencing exactly the diagnostics worth
+// having.
+static const char* bootNote = nullptr;
 static uint32_t chimeNextMs = 0;    // non-blocking second note of the chime
 static uint8_t  chimeStep   = 0;
 uint32_t     lastShakeCheck = 0;
@@ -1073,9 +1078,12 @@ void setup() {
   Serial.setTxTimeoutMs(0);
   {
     auto cfg = M5.config();
-    // Nothing in this firmware uses the Grove port, and output_power defaults
-    // to on, which leaves the PM1's 5V boost converter running off the
-    // battery for no load at all.
+    // Nothing in this firmware drives the Grove port on either board, and
+    // output_power defaults to on, which leaves a 5V boost converter running
+    // unloaded off the battery — the PM1's on the StickS3, EXTEN on the
+    // StickC Plus's AXP192. On the StickS3 that alone was enough to cancel
+    // out the charge current. Attaching a Grove peripheral means dropping
+    // this line; see the README.
     cfg.output_power = false;
     M5.begin(cfg);
   }
@@ -1089,10 +1097,11 @@ void setup() {
   // diagnose (VBUS reads fine, nothing reports a fault).
   {
     bool charging = false;
-    M5.Power.M5pm1.getBatteryCharge(&charging);
-    if (!charging) {
+    if (!M5.Power.M5pm1.getBatteryCharge(&charging)) {
+      bootNote = "[pwr] could not read charger state";
+    } else if (!charging) {
       M5.Power.M5pm1.setBatteryCharge(true);
-      Serial.println("[pwr] charger was disabled at boot; enabled");
+      bootNote = "[pwr] charger was disabled at boot; enabled";
     }
   }
 #endif
@@ -1151,6 +1160,8 @@ void loop() {
   t++;
   uint32_t now = millis();
 
+  if (bootNote && Serial) { Serial.println(bootNote); bootNote = nullptr; }
+
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);
 
@@ -1208,15 +1219,23 @@ void loop() {
 
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
-  // LED: pulse on attention, otherwise off
-  if (!settings().led) {
-    compatLedSet(false);
-  } else if (activeState == P_ATTENTION) {
-    compatLedSet((now / 400) % 2);          // slow pulse: waiting on you
-  } else if ((int32_t)(now - quietAlertUntil) < 0) {
-    compatLedSet((now / 150) % 2);          // quick flutter: work went quiet
-  } else {
-    compatLedSet(false);
+  // LED: pulse on attention, otherwise off.
+  bool ledOn = false;
+  if (settings().led) {
+    if (activeState == P_ATTENTION) {
+      ledOn = (now / 400) % 2;              // slow pulse: waiting on you
+    } else if ((int32_t)(now - quietAlertUntil) < 0) {
+      ledOn = (now / 150) % 2;              // quick flutter: work went quiet
+    }
+  }
+  // Only write on a change. On the StickS3 the LED lives on the PMIC's
+  // PWR_CFG register, so an unconditional call here would be an I2C
+  // read-modify-write of the charger and rail enables sixty times a second.
+  // -1 forces the first write regardless of what compatLedInit() left.
+  static int8_t ledLast = -1;
+  if (ledLast != (int8_t)ledOn) {
+    ledLast = ledOn;
+    compatLedSet(ledOn);
   }
 
   // shake → dizzy + force scenario advance
