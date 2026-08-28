@@ -153,14 +153,16 @@ const uint8_t INFO_PG_CREDITS = 5;
 
 void applyDisplayMode() {
   bool peek = displayMode != DISP_NORMAL;
-  characterSetPeek(peek);
+  bool peekChanged = characterSetPeek(peek);
   buddySetPeek(peek);
   // Clear the whole sprite on mode switch. drawInfo/drawPet clear their
   // own regions when they run, but when you switch FROM info/pet TO normal,
   // those functions stop running and their stale pixels stay behind. Full
   // clear is cheap and guarantees no leftovers between modes.
   spr.fillSprite(0x0000);
-  characterInvalidate();  // redraws character on next tick (text mode path)
+  // characterSetPeek already invalidated if the level moved; doing it again
+  // reopens the GIF a second time for nothing.
+  if (!peekChanged) characterInvalidate();
 }
 
 const char* menuItems[] = { "settings", "turn off", "help", "about", "demo", "close" };
@@ -1482,9 +1484,16 @@ void loop() {
   static bool wasClocking = false;
   static bool wasLandscape = false;
   if (clocking != wasClocking || landscapeClock != wasLandscape) {
-    if (clocking && !landscapeClock) characterSetPeek(true);
-    else applyDisplayMode();
-    characterInvalidate();
+    // Both branches already invalidate: characterSetPeek() does it whenever
+    // the level actually changes, and applyDisplayMode() calls it outright.
+    // Invalidating again here reopened the GIF a second time, and every open
+    // used to clear the whole sprite -- so each transition in and out of clock
+    // mode cost two blinks rather than none.
+    if (clocking && !landscapeClock) {
+      if (!characterSetPeek(true)) characterInvalidate();
+    } else {
+      applyDisplayMode();
+    }
     if (buddyMode) buddyInvalidate();
     wasClocking = clocking;
     wasLandscape = landscapeClock;

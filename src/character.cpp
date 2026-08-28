@@ -65,6 +65,7 @@ static uint32_t    variantStartedMs = 0;
 static const uint32_t VARIANT_DWELL_MS = 5000;
 static const uint32_t ANIM_PAUSE_MS    = 800;
 static bool        gifOpen = false;
+static uint16_t    framesThisPlay = 0;   // frames drawn since open/reset
 
 static uint16_t parseHexColor(const char* s, uint16_t fallback) {
   if (!s) return fallback;
@@ -273,10 +274,11 @@ void characterRenderTo(TFT_eSPI* tgt, int cx, int cy) {
   _tgt = prevT; peekMode = prevP; gifX = px; gifY = py;
 }
 
-void characterSetPeek(bool peek) {
-  if (peekMode == peek) return;
+bool characterSetPeek(bool peek) {
+  if (peekMode == peek) return false;
   peekMode = peek;
   characterInvalidate();
+  return true;
 }
 
 void characterClose() {
@@ -346,8 +348,17 @@ void characterSetState(uint8_t s) {
     gifW = gif.getCanvasWidth();
     gifH = gif.getCanvasHeight();
     gifPlace();
-    spr.fillSprite(pal.bg);   // bias upward, leave room for HUD
+    // Clear only when the pet lands somewhere new. The GIFs are unoptimised
+    // full-frame, so a same-size, same-place animation repaints every pixel it
+    // owns and a wipe would just be a visible blink on every state change.
+    // A different size or origin does leave stale pixels, so that still wipes.
+    static int lastX = -1, lastY = -1, lastW = -1, lastH = -1;
+    if (gifX != lastX || gifY != lastY || gifW != lastW || gifH != lastH) {
+      spr.fillSprite(pal.bg);
+      lastX = gifX; lastY = gifY; lastW = gifW; lastH = gifH;
+    }
     nextFrameAt = 0;
+    framesThisPlay = 0;
     variantStartedMs = millis();
     Serial.printf("[char] %s: %dx%d @ (%d,%d) heap=%u\n",
       gifPaths[idx], gifW, gifH, gifX, gifY, ESP.getFreeHeap());
@@ -406,8 +417,21 @@ void characterTick() {
     // last frame; just stop ticking. Multi-gif states (idle rotation)
     // still advance after a brief pause.
     if (stateCount[drawState] == 1) {
-      gif.close();
-      gifOpen = false;
+      // Loop in place rather than freezing. What made freezing attractive was
+      // the cost of *reopening* the file -- a LittleFS open plus header decode
+      // -- but gif.reset() only rewinds the decoder, which is exactly what the
+      // multi-variant path below already does inside its dwell window. Looping
+      // here means a state needs only one file to animate continuously, with
+      // no reopen, no full-sprite clear and no pause between passes, so a pack
+      // no longer has to duplicate files to get a state to keep moving.
+      if (framesThisPlay <= 1) {   // nothing to animate: a still image
+        gif.close();
+        gifOpen = false;
+        return;
+      }
+      gif.reset();
+      framesThisPlay = 0;
+      nextFrameAt = now;
       return;
     }
     // Multi-variant: loop the same GIF until the dwell window elapses, then
@@ -423,5 +447,6 @@ void characterTick() {
     animPauseUntil = now + ANIM_PAUSE_MS;
     return;
   }
+  framesThisPlay++;
   nextFrameAt = now + (delayMs > 0 ? delayMs : 100);
 }

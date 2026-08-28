@@ -23,7 +23,10 @@ void characterClose();   // close GIF + clear loaded flag; FS stays mounted   //
 // Peek mode renders the GIF at half scale, centered in the info-panel
 // header strip; off renders full-size centered in the upper home area.
 // Adaptive to actual canvas height — no padding required in source art.
-void characterSetPeek(bool peek);
+// Returns true when the level actually changed, which also means it has
+// already invalidated -- callers must not invalidate a second time, since
+// every invalidate reopens the GIF and that is a visible blink.
+bool characterSetPeek(bool peek);
 #include "compat.h"
 void characterRenderTo(TFT_eSPI* tgt, int cx, int cy);
 
