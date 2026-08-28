@@ -59,7 +59,6 @@ uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
 uint8_t msgScroll = 0;
-uint32_t lastScrollMs = 0;      // when B last moved the transcript window
 uint8_t hudMaxBack = 0;         // furthest the window can go, set by drawHUD
 uint16_t lastLineGen = 0;
 char     lastPromptId[40] = "";
@@ -91,14 +90,7 @@ static void nextPet() {
 }
 uint32_t wakeTransitionUntil = 0;
 const uint32_t SCREEN_OFF_MS = 30000;
-// Safety net for a window left scrolled back after someone walked away, not
-// a reading timer. It was 20s, which is shorter than the gap between a single
-// agent's tool calls: you would scroll back to read something, the work you
-// were reading about would still be running, and the window would snap to the
-// tail from under you — the same interruption the scroll fix existed to stop,
-// just triggered by a clock instead of by new content. Returning to live is
-// one button press, so this only has to catch the abandoned case.
-const uint32_t SCROLL_IDLE_MS = 180000;
+
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -1032,14 +1024,6 @@ void drawHUD() {
 
   if (tama.lineGen != lastLineGen) { lastLineGen = tama.lineGen; wake(); }
 
-  // A window parked on old rows goes stale: work keeps arriving and it keeps
-  // showing what it showed. Snap back to live after a spell with no scrolling,
-  // which also means the only way to get stuck reading history is to keep
-  // asking for it.
-  if (msgScroll > 0 && (uint32_t)(millis() - lastScrollMs) > SCROLL_IDLE_MS) {
-    msgScroll = 0;
-  }
-
   if (tama.nLines == 0) {
     spr.setTextColor(p.text, p.bg);
     spr.setCursor(4, H - LH - 2);
@@ -1442,7 +1426,6 @@ void loop() {
       // B doing nothing visible until the counter happened to reach 30. Now
       // the oldest row is one press from live.
       msgScroll = (msgScroll >= hudMaxBack) ? 0 : msgScroll + 1;
-      lastScrollMs = millis();
     }
   }
 
@@ -1572,6 +1555,12 @@ void loop() {
       && millis() - lastInteractMs > SCREEN_OFF_MS) {
     M5.Display.sleep();
     screenOff = true;
+    // Nobody is reading a dark screen, so this is the moment a scrolled-back
+    // window has been abandoned — no separate deadline needed, and no chance
+    // of the two disagreeing. A timer here was 6x the screen timeout, so the
+    // display slept first and woke still parked on stale rows: exactly what
+    // the timer existed to prevent.
+    msgScroll = 0;
   }
 
   delay(screenOff ? 100 : 16);
