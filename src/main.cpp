@@ -60,6 +60,7 @@ uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
 uint8_t msgScroll = 0;
 uint32_t lastScrollMs = 0;      // when B last moved the transcript window
+uint8_t hudMaxBack = 0;         // furthest the window can go, set by drawHUD
 uint16_t lastLineGen = 0;
 char     lastPromptId[40] = "";
 uint32_t lastInteractMs = 0;
@@ -90,10 +91,14 @@ static void nextPet() {
 }
 uint32_t wakeTransitionUntil = 0;
 const uint32_t SCREEN_OFF_MS = 30000;
-// How long a scrolled-back transcript window stays put before returning to
-// live. Long enough to read three rows, short enough that walking away does
-// not leave the stick showing yesterday.
-const uint32_t SCROLL_IDLE_MS = 20000;
+// Safety net for a window left scrolled back after someone walked away, not
+// a reading timer. It was 20s, which is shorter than the gap between a single
+// agent's tool calls: you would scroll back to read something, the work you
+// were reading about would still be running, and the window would snap to the
+// tail from under you — the same interruption the scroll fix existed to stop,
+// just triggered by a clock instead of by new content. Returning to live is
+// one button press, so this only has to catch the abandoned case.
+const uint32_t SCROLL_IDLE_MS = 180000;
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -1081,6 +1086,7 @@ void drawHUD() {
   }
 
   uint8_t maxBack = (nDisp > SHOW) ? (nDisp - SHOW) : 0;
+  hudMaxBack = maxBack;
   if (msgScroll > maxBack) msgScroll = maxBack;
   // Latch the freeze once the clamp has confirmed there is somewhere to go.
   if (msgScroll > 0) frozen = true;
@@ -1431,7 +1437,11 @@ void loop() {
       applyDisplayMode();
     } else {
       beep(2400, 30);
-      msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+      // Wrap at the end of the available scrollback rather than a fixed 30.
+      // The window clamps to hudMaxBack every frame, so counting past it left
+      // B doing nothing visible until the counter happened to reach 30. Now
+      // the oldest row is one press from live.
+      msgScroll = (msgScroll >= hudMaxBack) ? 0 : msgScroll + 1;
       lastScrollMs = millis();
     }
   }
