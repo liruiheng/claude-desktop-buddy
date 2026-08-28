@@ -143,5 +143,9 @@ def after_upload(source, target, env):
     print("[sticks3] watchdog reset issued — the board boots on its own")
 
 
-env.AddPreAction("upload", before_upload)
-env.AddPostAction("upload", after_upload)
+# uploadfs needs the identical treatment: tools/flash_character.py drives it
+# to push a character pack over USB, and it reaches the same chip through the
+# same portless USB stack.
+for _target in ("upload", "uploadfs"):
+    env.AddPreAction(_target, before_upload)
+    env.AddPostAction(_target, after_upload)
