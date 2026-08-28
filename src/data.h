@@ -139,10 +139,17 @@ static void _applyJson(const char* line, TamaState* out) {
   _lastLiveMs = millis();
 }
 
+// A whole snapshot has to fit here in one piece: 8 entries of up to 88
+// characters each, and a CJK character is 3 UTF-8 bytes, so the transcript
+// alone reaches 8 * 264 = 2112 bytes before msg, prompt and the JSON syntax
+// around them. At 1024 every heartbeat from a non-latin session overran the
+// buffer and was thrown away by the parser, which looked exactly like the
+// bridge going quiet.
 template<size_t N>
 struct _LineBuf {
   char buf[N];
   uint16_t len = 0;
+  bool over = false;      // this line already ran past the buffer
   void feed(Stream& s, TamaState* out) {
     // Drive the drain off read()'s -1 sentinel, NOT available(): on the
     // ESP32-S3 native USB-CDC, available() can report bytes that read()
@@ -153,15 +160,24 @@ struct _LineBuf {
       if (ci < 0) break;
       char c = (char)ci;
       if (c == '\n' || c == '\r') {
-        if (len > 0) { buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0; }
+        if (over) {
+          // Parsing the truncated head just fails, and the failure discards
+          // the entire snapshot -- counts, msg, prompt -- with nothing said.
+          Serial.println("[data] snapshot exceeded line buffer, dropped");
+          over = false; len = 0;
+        } else if (len > 0) {
+          buf[len]=0; if (buf[0]=='{') _applyJson(buf, out); len=0;
+        }
       } else if (len < N-1) {
         buf[len++] = c;
+      } else {
+        over = true;
       }
     }
   }
 };
 
-static _LineBuf<1024> _usbLine, _btLine;
+static _LineBuf<4096> _usbLine, _btLine;
 
 inline void dataPoll(TamaState* out) {
   uint32_t now = millis();
@@ -183,13 +199,18 @@ inline void dataPoll(TamaState* out) {
     if (c < 0) break;
     _lastBtByteMs = millis();
     if (c == '\n' || c == '\r') {
-      if (_btLine.len > 0) {
+      if (_btLine.over) {
+        Serial.println("[data] BLE snapshot exceeded line buffer, dropped");
+        _btLine.over = false; _btLine.len = 0;
+      } else if (_btLine.len > 0) {
         _btLine.buf[_btLine.len] = 0;
         if (_btLine.buf[0] == '{') _applyJson(_btLine.buf, out);
         _btLine.len = 0;
       }
     } else if (_btLine.len < sizeof(_btLine.buf) - 1) {
       _btLine.buf[_btLine.len++] = (char)c;
+    } else {
+      _btLine.over = true;
     }
   }
 

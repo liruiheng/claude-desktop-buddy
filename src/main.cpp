@@ -1111,6 +1111,10 @@ void setup() {
   // host, hanging setup()/loop(). Make it non-blocking so the device runs
   // standalone. Harmless on the StickC Plus (real UART).
   Serial.setTxTimeoutMs(0);
+  // The CDC RX queue defaults to 256 bytes, but USB is a supported bridge
+  // transport here and a snapshot runs to a couple of KB — a desktop pushing
+  // one over the wire outruns a 16ms loop and the tail is dropped.
+  Serial.setRxBufferSize(4096);
   {
     auto cfg = M5.config();
     // Nothing in this firmware drives the Grove port on either board, and
@@ -1209,6 +1213,16 @@ void loop() {
   uint32_t now = millis();
 
   if (bootNote && Serial) { Serial.println(bootNote); bootNote = nullptr; }
+
+  { // Silent corruption is the failure mode that cost the most time here.
+    static uint32_t lastDropped = 0;
+    uint32_t dropped = bleRxDropped();
+    if (dropped != lastDropped) {
+      Serial.printf("[ble] RX ring full, dropped %lu bytes total\n",
+                    (unsigned long)dropped);
+      lastDropped = dropped;
+    }
+  }
 
   dataPoll(&tama);
   if (statsPollLevelUp()) triggerOneShot(P_CELEBRATE, 3000);

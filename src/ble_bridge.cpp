@@ -15,10 +15,16 @@
 #define NUS_TX_UUID      "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 // Incoming bytes are buffered in a simple ring for bleRead()/bleAvailable().
-// Sized to hold a transcript snapshot JSON plus headroom; the GATT layer
-// will flow-control if we fall behind.
-static const size_t RX_CAP = 2048;
+// Sized to hold a transcript snapshot JSON plus headroom. 2048 was that size
+// for a latin transcript and nothing else: the desktop slices each of its 8
+// entries to 88 characters, which is 88 bytes of ASCII but 264 of CJK, so a
+// non-latin snapshot measures ~2.2KB and overran the buffer outright. Bytes
+// were then dropped mid-line, the truncated JSON failed to parse, and the
+// whole snapshot vanished without a word — indistinguishable from the bridge
+// going quiet.
+static const size_t RX_CAP = 8192;
 static uint8_t  rxBuf[RX_CAP];
+static volatile uint32_t rxDropped = 0;
 static volatile size_t rxHead = 0;
 static volatile size_t rxTail = 0;
 
@@ -33,7 +39,7 @@ static volatile uint16_t  mtu = 23;
 static void rxPush(const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; i++) {
     size_t next = (rxHead + 1) % RX_CAP;
-    if (next == rxTail) return;  // full — drop (upstream should keep up)
+    if (next == rxTail) { rxDropped += (uint32_t)(n - i); return; }
     rxBuf[rxHead] = p[i];
     rxHead = next;
   }
@@ -141,6 +147,7 @@ void bleInit(const char* deviceName) {
 bool bleConnected() { return connected; }
 bool bleSecure()    { return secure; }
 uint32_t blePasskey() { return passkey; }
+uint32_t bleRxDropped() { return rxDropped; }
 
 void bleClearBonds() {
   int n = esp_ble_get_bond_device_num();
