@@ -41,6 +41,7 @@ uint32_t     quietAlertUntil = 0;   // LED flutter window for the all-quiet aler
 // dropped rather than queued — silencing exactly the diagnostics worth
 // having.
 static const char* bootNote = nullptr;
+static const char* bootReason = nullptr;
 static uint32_t chimeNextMs = 0;    // non-blocking second note of the chime
 static uint8_t  chimeStep   = 0;
 uint32_t     lastShakeCheck = 0;
@@ -1107,6 +1108,21 @@ void setup() {
   // host, hanging setup()/loop(). Make it non-blocking so the device runs
   // standalone. Harmless on the StickC Plus (real UART).
   Serial.setTxTimeoutMs(0);
+  // Why the last boot happened, held until a host is listening. Two comms
+  // outages have been observed where the render loop kept running while BLE
+  // and USB-CDC both went silent, with an empty coredump and a healthy heap —
+  // so nothing crashed and the watchdog, which only covers a wedged loop, had
+  // nothing to act on. Recording the reset reason at least distinguishes a
+  // power-cycle from a panic, a brownout or a watchdog the next time one of
+  // these has to be untangled after the fact.
+  {
+    static const char* const R[] = {
+      "unknown", "power-on", "external", "software", "panic", "int watchdog",
+      "task watchdog", "other watchdog", "deep sleep", "brownout", "sdio",
+    };
+    int r = (int)esp_reset_reason();
+    bootReason = (r >= 0 && r < (int)(sizeof(R)/sizeof(R[0]))) ? R[r] : "?";
+  }
   // The CDC RX queue defaults to 256 bytes, but USB is a supported bridge
   // transport here and a snapshot runs to a couple of KB — a desktop pushing
   // one over the wire outruns a 16ms loop and the tail is dropped.
@@ -1211,6 +1227,10 @@ void loop() {
   t++;
   uint32_t now = millis();
 
+  if (bootReason && Serial) {
+    Serial.printf("[boot] reset reason: %s\n", bootReason);
+    bootReason = nullptr;
+  }
   if (bootNote && Serial) { Serial.println(bootNote); bootNote = nullptr; }
 
   { // Silent corruption is the failure mode that cost the most time here.
