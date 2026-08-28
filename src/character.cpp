@@ -33,6 +33,12 @@ static uint8_t stateCount[N_STATES];
 static uint8_t stateRot[N_STATES];
 static uint8_t gifTotal = 0;
 static uint8_t curState = 0xFF;
+// Which state's art is actually on screen. Equal to curState for a complete
+// pack; for a partial one it points at the substitute, so the frame and
+// rotation bookkeeping below indexes a state that really has files. Indexing
+// by curState there would divide by a zero count.
+static uint8_t drawState = 0xFF;
+static const uint8_t ST_IDLE = 1;   // index into STATE_NAMES
 
 static AnimatedGIF gif;
 static File        gifFile;
@@ -278,6 +284,7 @@ void characterClose() {
   loaded = false;
   textMode = false;
   curState = 0xFF;
+  drawState = 0xFF;
 }
 
 void characterInvalidate() {
@@ -309,12 +316,29 @@ void characterSetState(uint8_t s) {
   animPauseUntil = 0;
   curState = s;
 
-  if (stateCount[s] == 0) {
-    Serial.printf("[char] no gif for state %d\n", s);
-    return;
+  // A pack need not cover all seven states. Missing ones used to close the
+  // open GIF and open nothing, and the renderer draws nothing without one --
+  // so the pet froze on whatever frame happened to be in the sprite, which
+  // reads as a hang rather than as a state with no art. Substitute instead:
+  // idle if the pack has it, otherwise the first state that does.
+  uint8_t draw = s;
+  if (stateCount[draw] == 0) {
+    draw = ST_IDLE;
+    if (stateCount[draw] == 0) {
+      draw = 0xFF;
+      for (uint8_t i = 0; i < N_STATES; i++) {
+        if (stateCount[i]) { draw = i; break; }
+      }
+    }
+    if (draw == 0xFF) {
+      Serial.printf("[char] state %d missing and pack has no frames at all\n", s);
+      return;
+    }
+    Serial.printf("[char] state %d missing, falling back to %d\n", s, draw);
   }
+  drawState = draw;
 
-  uint8_t idx = stateStart[s] + stateRot[s];
+  uint8_t idx = stateStart[draw] + stateRot[draw];
   char full[80];
   snprintf(full, sizeof(full), "%s/%s", basePath, gifPaths[idx]);
   if (gif.open(full, gifOpenCb, gifCloseCb, gifReadCb, gifSeekCb, gifDrawCb)) {
@@ -381,7 +405,7 @@ void characterTick() {
     // possibly starving the BT controller. The sprite already holds the
     // last frame; just stop ticking. Multi-gif states (idle rotation)
     // still advance after a brief pause.
-    if (stateCount[curState] == 1) {
+    if (stateCount[drawState] == 1) {
       gif.close();
       gifOpen = false;
       return;
@@ -395,7 +419,7 @@ void characterTick() {
       return;
     }
     gif.close(); gifOpen = false;
-    stateRot[curState] = (stateRot[curState] + 1) % stateCount[curState];
+    stateRot[drawState] = (stateRot[drawState] + 1) % stateCount[drawState];
     animPauseUntil = now + ANIM_PAUSE_MS;
     return;
   }
