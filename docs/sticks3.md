@@ -157,6 +157,42 @@ needs 265 bytes per entry to hold 88 CJK characters without clipping.
 **Chat conversations are not included.** Only Claude Code and Cowork sessions
 have the `pendingToolPermissions` the bridge reads.
 
+## Power
+
+The 250mAh cell is small for what this board runs — a 240MHz dual-core S3
+with PSRAM, BLE advertising continuously, and a backlit LCD — so the margin
+between draw and charge is thin enough that configuration mistakes flip the
+sign.
+
+**Turn the Grove rail off.** `M5.begin()` defaults `cfg.output_power` to
+true, which enables the PM1's 5V boost converter for the Grove port. On a
+firmware that never touches that port it runs unloaded off the battery, and
+it costs enough to cancel out the charge current: measured on USB, a stick
+with the boost on drifted down from 3.6V to 3.36V across an afternoon while
+`isCharging()` read true the whole time, with battery voltage swinging ±60mV
+sample to sample. With `cfg.output_power = false` the same stick climbed
+steadily and the swing dropped to ±6mV.
+
+That failure mode is quiet, which is what makes it worth knowing: VBUS reads
+5.1V, the charge-status pin says charging, `PWR_CFG` has `CHG_EN` set, and
+the battery still goes down.
+
+**Clock down.** The StickC Plus target sets `board_build.f_cpu =
+160000000L`. Without it the S3 runs at 240MHz — more than the older, slower
+board, for a workload that is idle most of the time.
+
+**Do not drive the LED from the render loop.** `LED_EN` is bit 4 of the same
+`PWR_CFG` register as `CHG_EN`, `DCDC_EN`, `LDO_EN` and `BOOST_EN`, so every
+LED write is an I2C read-modify-write of the PMIC's power configuration.
+Latch the state and only write on a change; on the StickC Plus the same call
+is a `digitalWrite` and costs nothing, which makes this easy to miss when
+porting.
+
+`bat.mA` is always 0 on this board — the PM1 does not report battery current
+through M5Unified — so charge state has to be read from `isCharging()` (PM1
+GPIO0, low means charging) and confirmed by watching the voltage trend.
+`getChargeCurrent()` returns 0 as well.
+
 ## Serial output
 
 With USB mode 0 the console works, and the firmware logs state changes rather

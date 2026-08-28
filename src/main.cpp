@@ -1071,7 +1071,32 @@ void setup() {
   // host, hanging setup()/loop(). Make it non-blocking so the device runs
   // standalone. Harmless on the StickC Plus (real UART).
   Serial.setTxTimeoutMs(0);
-  M5.begin();
+  {
+    auto cfg = M5.config();
+    // Nothing in this firmware uses the Grove port, and output_power defaults
+    // to on, which leaves the PM1's 5V boost converter running off the
+    // battery for no load at all.
+    cfg.output_power = false;
+    M5.begin(cfg);
+  }
+
+#if defined(BOARD_STICKS3)
+  // Defensive. M5Unified enables the charger in Power.begin() for some boards
+  // but not this one, so CHG_EN is left at whatever PWR_CFG holds — and
+  // PWR_CFG survives a reset. Measured boards come up with it set, so this
+  // has not been seen to fire; it is here because the LED shares this
+  // register, and a stick that silently stops charging is miserable to
+  // diagnose (VBUS reads fine, nothing reports a fault).
+  {
+    bool charging = false;
+    M5.Power.M5pm1.getBatteryCharge(&charging);
+    if (!charging) {
+      M5.Power.M5pm1.setBatteryCharge(true);
+      Serial.println("[pwr] charger was disabled at boot; enabled");
+    }
+  }
+#endif
+
   M5.Lcd.setRotation(0);
   // IMU auto-inits in M5.begin(). Volume comes from NVS, but settingsLoad()
   // runs further down, so this is re-applied after it.

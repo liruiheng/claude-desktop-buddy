@@ -97,8 +97,21 @@ static inline bool compatOnUsb() {
 // LED_EN alone -- it only claims PM1 gpio0 for the power button -- so the
 // firmware owns that bit outright.
 #if defined(BOARD_STICKS3)
-static inline void compatLedSet(bool on) { M5.Power.M5pm1.setLedEnLevel(on); }
-static inline void compatLedInit() { compatLedSet(false); }
+// Every call here is an I2C read-modify-write of PWR_CFG — the same register
+// that carries the charger and rail enables (CHG_EN, DCDC_EN, LDO_EN,
+// BOOST_EN). main.cpp drives the LED from the render loop, so an unlatched
+// write would hammer the PMIC's power configuration 60 times a second for no
+// reason. Latch it and only touch the bus on a real change.
+static bool _compatLedOn = false;
+static inline void compatLedSet(bool on) {
+  if (on == _compatLedOn) return;
+  _compatLedOn = on;
+  M5.Power.M5pm1.setLedEnLevel(on);
+}
+static inline void compatLedInit() {
+  _compatLedOn = true;          // force the first write through
+  compatLedSet(false);
+}
 #else
 static const int COMPAT_LED_PIN = 10;
 static inline void compatLedInit() {
