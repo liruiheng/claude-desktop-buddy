@@ -150,9 +150,31 @@ from completed work.
 **`entries` carries prose, not just commands.** The transcript is the tail of
 the session's own messages — assistant text included, in whatever language
 the session is conducted in. It is not a log of tool invocations, and it is
-routinely non-ASCII. The desktop keeps the last 8 messages of the most
-recently active session and slices each to 88 characters, so a receive buffer
-needs 265 bytes per entry to hold 88 CJK characters without clipping.
+routinely non-ASCII.
+
+**Size the whole receive path for CJK, not just the entry slots.** The
+desktop keeps the last 8 messages of the most recently active session and
+slices each to 88 characters. That is 88 bytes of ASCII but 264 of CJK, so
+one snapshot reaches about 2.2KB on the wire — measured at 2212 bytes for the
+worst case the protocol permits. Every buffer it passes through has to hold
+it whole:
+
+| | was | needs |
+| --- | --- | --- |
+| BLE RX ring | 2048 | 8192 |
+| JSON line buffer | 1024 | 4096 |
+| USB CDC RX queue | 256 (Arduino default) | 4096 |
+
+Undersizing any of them fails the same way, and the way is nasty: bytes are
+dropped mid-line, the JSON no longer parses, and a parse failure discards the
+*entire* snapshot — session counts, `msg`, pending prompt and all. Nothing is
+logged, nothing errors, and after 30s of that the device decides the bridge is
+gone and displays "No Claude connected" while the desktop insists it is
+connected. Sizing for a latin transcript and testing in English hides this
+completely.
+
+Drop a byte on the floor loudly: count what the ring discards and report an
+overlong line rather than handing its truncated head to the parser.
 
 **Chat conversations are not included.** Only Claude Code and Cowork sessions
 have the `pendingToolPermissions` the bridge reads.
