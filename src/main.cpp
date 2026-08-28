@@ -50,7 +50,10 @@ unsigned long t = 0;
 // Menu
 bool    menuOpen    = false;
 uint8_t menuSel     = 0;
-uint8_t brightLevel = 4;           // 0..4 → display brightness 51..255
+// Brightness lives in Settings so it survives a reboot; it used to be a bare
+// global that reset to maximum every boot, which quietly undid any attempt to
+// turn it down.
+bool hudVisible = false;           // did drawHUD paint the last frame?
 bool    btnALong    = false;
 
 enum DisplayMode { DISP_NORMAL, DISP_PET, DISP_INFO, DISP_COUNT };
@@ -103,7 +106,7 @@ static bool isFaceDown() {
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Display.setBrightness((brightLevel + 1) * 51); }
+static void applyBrightness() { M5.Display.setBrightness((settings().bright + 1) * 51); }
 
 // Speaker levels. The StickS3 drives a real 1W speaker, not the StickC
 // Plus's piezo buzzer, so the old hardcoded 180 is genuinely loud on a
@@ -178,9 +181,10 @@ static void applySetting(uint8_t idx) {
   Settings& s = settings();
   switch (idx) {
     case 0:
-      brightLevel = (brightLevel + 1) % 5;
+      s.bright = (s.bright + 1) % 5;
       applyBrightness();
-      return;
+      break;              // falls through to settingsSave() -- it used to
+                          // return here, which is why it never persisted
     case 1: s.sound = !s.sound; break;
     case 2:
       s.volume = (s.volume + 1) % 5;
@@ -317,7 +321,7 @@ static void drawSettings() {
       spr.setTextColor(*b ? GREEN : p.textDim, PANEL);
       spr.print(*b ? " on" : "off");
     } else if (i == 0) {
-      spr.printf("%u/4", brightLevel);
+      spr.printf("%u/4", s.bright);
     } else if (i == 2) {
       spr.printf("%u/4", s.volume);
     } else if (i == 7) {
@@ -680,7 +684,7 @@ void drawInfo() {
     uint32_t up = millis() / 1000;
     ln("  uptime   %luh %02lum", up / 3600, (up / 60) % 60);
     ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
-    ln("  bright   %u/4", brightLevel);
+    ln("  bright   %u/4", settings().bright);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
     ln("  temp     %dC", compatChipTempC());
 
@@ -1071,6 +1075,7 @@ void drawHUD() {
 
   uint8_t maxBack = (nDisp > SHOW) ? (nDisp - SHOW) : 0;
   hudMaxBack = maxBack;
+  hudVisible = true;
   if (msgScroll > maxBack) msgScroll = maxBack;
   // Latch the freeze once the clamp has confirmed there is somewhere to go.
   if (msgScroll > 0) frozen = true;
@@ -1142,10 +1147,13 @@ void setup() {
   M5.Speaker.setVolume(VOL_STEPS[2]);
   startBt();
   compatLedInit();
-  applyBrightness();
   lastInteractMs = millis();
   statsLoad();
   settingsLoad();
+  // Both read Settings, so they belong after the load. Brightness was applied
+  // before it, i.e. always at the compiled-in default no matter what was
+  // stored.
+  applyBrightness();
   applyVolume();
   petNameLoad();
   buddyInit();
@@ -1419,7 +1427,7 @@ void loop() {
       beep(2400, 30);
       petPage = (petPage + 1) % PET_PAGES;
       applyDisplayMode();
-    } else {
+    } else if (hudVisible) {
       beep(2400, 30);
       // Wrap at the end of the available scrollback rather than a fixed 30.
       // The window clamps to hudMaxBack every frame, so counting past it left
@@ -1511,6 +1519,10 @@ void loop() {
       spr.print("no character loaded");
     }
   }
+  // The B handler runs before this and cannot see which surface is up, so
+  // record it. Without that, pressing B under the clock face silently bumped
+  // the transcript offset and beeped, with nothing on screen to show for it.
+  hudVisible = false;
   if (landscapeClock) {
     drawClock();
   } else if (!napping && !screenOff) {
