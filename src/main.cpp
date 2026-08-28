@@ -1025,10 +1025,7 @@ void drawHUD() {
   spr.setFont(&fonts::efontCN_12);
   spr.setTextSize(1);
 
-  // Note the change here, but leave the scroll window alone until the row
-  // count below is known — the adjustment depends on how much the buffer grew.
-  bool contentChanged = (tama.lineGen != lastLineGen);
-  if (contentChanged) { lastLineGen = tama.lineGen; wake(); }
+  if (tama.lineGen != lastLineGen) { lastLineGen = tama.lineGen; wake(); }
 
   // A window parked on old rows goes stale: work keeps arriving and it keeps
   // showing what it showed. Snap back to live after a spell with no scrolling,
@@ -1058,32 +1055,36 @@ void drawHUD() {
   static char disp[32][HUD_WRAP_BYTES];
   static char tmp[32][HUD_WRAP_BYTES];
   static uint8_t srcOf[32];
-  uint8_t nDisp = 0;
-  for (int i = (int)tama.nLines - 1; i >= 0 && nDisp < 32; i--) {
-    uint8_t got = wrapInto(tama.lines[i], tmp, 32 - nDisp, WIDTH);
-    if (!got) continue;
-    memmove(&disp[got], &disp[0], (size_t)nDisp * HUD_WRAP_BYTES);
-    memmove(&srcOf[got], &srcOf[0], nDisp);
-    memcpy(&disp[0], &tmp[0], (size_t)got * HUD_WRAP_BYTES);
-    for (uint8_t j = 0; j < got; j++) srcOf[j] = (uint8_t)i;
-    nDisp += got;
-  }
+  static uint8_t nDisp = 0;
+  static bool frozen = false;
 
-  // Scrolled back means the reader is looking at something, so new arrivals
-  // must not yank the window to the tail. Offsets count rows back from the
-  // end, so appended rows would slide the view forward on their own; shift by
-  // the growth to hold the same lines under the window. Rows ageing off the
-  // front still drift it — the buffer only keeps the last 8 entries — but
-  // that is a slow drift rather than an instant jump.
-  static uint8_t prevNDisp = 0;
-  if (contentChanged && msgScroll > 0 && nDisp > prevNDisp) {
-    uint16_t shifted = (uint16_t)msgScroll + (uint16_t)(nDisp - prevNDisp);
-    msgScroll = (shifted > 255) ? 255 : (uint8_t)shifted;
+  // Scrolled back, the buffer is frozen rather than rebuilt. The desktop only
+  // keeps the last 8 entries, so a new one pushes an old one out: rows leave
+  // the front as fast as they arrive at the back. Shifting the offset by the
+  // net row count — the obvious fix, and the one tried first — therefore
+  // adjusts by nothing at all in steady state, and the window slides to the
+  // tail regardless. Not re-wrapping at all is simpler, cheaper, and exact:
+  // what you are reading cannot move because nothing rebuilt it.
+  if (msgScroll == 0) frozen = false;
+
+  if (!frozen) {
+    nDisp = 0;
+    for (int i = (int)tama.nLines - 1; i >= 0 && nDisp < 32; i--) {
+      uint8_t got = wrapInto(tama.lines[i], tmp, 32 - nDisp, WIDTH);
+      if (!got) continue;
+      memmove(&disp[got], &disp[0], (size_t)nDisp * HUD_WRAP_BYTES);
+      memmove(&srcOf[got], &srcOf[0], nDisp);
+      memcpy(&disp[0], &tmp[0], (size_t)got * HUD_WRAP_BYTES);
+      for (uint8_t j = 0; j < got; j++) srcOf[j] = (uint8_t)i;
+      nDisp += got;
+    }
   }
-  prevNDisp = nDisp;
 
   uint8_t maxBack = (nDisp > SHOW) ? (nDisp - SHOW) : 0;
   if (msgScroll > maxBack) msgScroll = maxBack;
+  // Latch the freeze once the clamp has confirmed there is somewhere to go.
+  if (msgScroll > 0) frozen = true;
+
 
   int end = (int)nDisp - msgScroll;
   int start = end - SHOW; if (start < 0) start = 0;
