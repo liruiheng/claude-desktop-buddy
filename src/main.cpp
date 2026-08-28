@@ -59,6 +59,7 @@ uint8_t infoPage = 0;
 uint8_t petPage = 0;
 const uint8_t PET_PAGES = 2;
 uint8_t msgScroll = 0;
+uint32_t lastScrollMs = 0;      // when B last moved the transcript window
 uint16_t lastLineGen = 0;
 char     lastPromptId[40] = "";
 uint32_t lastInteractMs = 0;
@@ -89,6 +90,10 @@ static void nextPet() {
 }
 uint32_t wakeTransitionUntil = 0;
 const uint32_t SCREEN_OFF_MS = 30000;
+// How long a scrolled-back transcript window stays put before returning to
+// live. Long enough to read three rows, short enough that walking away does
+// not leave the stick showing yesterday.
+const uint32_t SCROLL_IDLE_MS = 20000;
 
 bool     napping = false;
 uint32_t napStartMs = 0;
@@ -1021,12 +1026,24 @@ void drawHUD() {
   spr.setFont(&fonts::efontCN_12);
   spr.setTextSize(1);
 
-  if (tama.lineGen != lastLineGen) { msgScroll = 0; lastLineGen = tama.lineGen; wake(); }
+  // Note the change here, but leave the scroll window alone until the row
+  // count below is known — the adjustment depends on how much the buffer grew.
+  bool contentChanged = (tama.lineGen != lastLineGen);
+  if (contentChanged) { lastLineGen = tama.lineGen; wake(); }
+
+  // A window parked on old rows goes stale: work keeps arriving and it keeps
+  // showing what it showed. Snap back to live after a spell with no scrolling,
+  // which also means the only way to get stuck reading history is to keep
+  // asking for it.
+  if (msgScroll > 0 && (uint32_t)(millis() - lastScrollMs) > SCROLL_IDLE_MS) {
+    msgScroll = 0;
+  }
 
   if (tama.nLines == 0) {
     spr.setTextColor(p.text, p.bg);
     spr.setCursor(4, H - LH - 2);
     spr.print(tama.msg);
+    msgScroll = 0;                // nothing to scroll through
     spr.setFont(&fonts::Font0);   // every other panel assumes the 6x8 default
     return;
   }
@@ -1052,6 +1069,19 @@ void drawHUD() {
     for (uint8_t j = 0; j < got; j++) srcOf[j] = (uint8_t)i;
     nDisp += got;
   }
+
+  // Scrolled back means the reader is looking at something, so new arrivals
+  // must not yank the window to the tail. Offsets count rows back from the
+  // end, so appended rows would slide the view forward on their own; shift by
+  // the growth to hold the same lines under the window. Rows ageing off the
+  // front still drift it — the buffer only keeps the last 8 entries — but
+  // that is a slow drift rather than an instant jump.
+  static uint8_t prevNDisp = 0;
+  if (contentChanged && msgScroll > 0 && nDisp > prevNDisp) {
+    uint16_t shifted = (uint16_t)msgScroll + (uint16_t)(nDisp - prevNDisp);
+    msgScroll = (shifted > 255) ? 255 : (uint8_t)shifted;
+  }
+  prevNDisp = nDisp;
 
   uint8_t maxBack = (nDisp > SHOW) ? (nDisp - SHOW) : 0;
   if (msgScroll > maxBack) msgScroll = maxBack;
@@ -1388,6 +1418,7 @@ void loop() {
     } else {
       beep(2400, 30);
       msgScroll = (msgScroll >= 30) ? 0 : msgScroll + 1;
+      lastScrollMs = millis();
     }
   }
 
